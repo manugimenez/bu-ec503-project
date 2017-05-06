@@ -1,56 +1,75 @@
+function out = gmm(x, k, varargin)
+%function out = gmm(x, k, allowCovariances)
 % Daniel Birch
 % dbirch@bu.edu
+% EC 503
+% Spring 2017
+%
+% This script implements the EM algorithm (Dempster, 1977) for the
+% Gaussian Mixture Model with a prescribed number of components.
+% The K-Means++ algorithm is used for initialization
+% (David Arthur and Sergei Vassilvitskii, 2007)
+% x is the data (number of data points x number of dimensions)
+% k is the number of clusters to form.
+% allowCovariances is optional (the default is true).
 
-% Clean up
-clc;
-clear all;
-close all;
-rng('shuffle');
+N = size(x, 1); % Number of data points
+d = size(x, 2); % Number of dimensions
+M = k; % number of clusters to form
 
-% User-defined parameters
-M = 4;% Number of clusters
-dataFile = 'gaussian_clusters_2017_04_25_18_09_11.mat';
+if nargin == 2
+    allowCovariances = true;
+else
+    allowCovariances = varargin{1};
+end
 
-% Load the data
-A = load(dataFile);
-d = A.d; % Number of dimensions
-radiusScale = A.radiusScale; % Length scale of a cluster
-allowCovariances = A.allowCovariances;
-N = A.nPoints;% Number of data points
-x = A.x; % Data points
+%%%%%% Initialize the parameter estimates
+% First initialize the means using k-means++
+muHat = NaN(M, d);
+muHat(1,:) = x(randi(N),:);
 
-% Initialize the parameter estimates
-pHat = exp(randn(M, 1));%log-normal probabilities
-pHat = pHat / sum(pHat);%Normalize
+figure('name', 'k-means++ initialization');
+plot(x(:,1), x(:,2), 'k.');
+hold on;
+xlabel('x1');
+ylabel('x2');
 
-% Generate random means covariances for each class
-muHat = rand(M, d); %exp(randn(numberOfClusters, d));
-sigmaHat = radiusScale * exp(randn(M, d)) / exp(0.5);
+for thisM = 2:M
+    q = pdist2(x, muHat(1:thisM-1,:));
+    q = min(q,[],2).^2;%Weight by the minimum squared distance
+    q = q / sum(q);% Normalize
+    q = cumsum(q);
+    I = find(rand(1) < q, 1 );
+    muHat(thisM,:) = x(I,:);
+    plot(x(I,1), x(I,2), 'r.', 'markersize', 20);
+    pause(0.2);
+end
+
+% Now initialize proportions and covariances
+pHat = (1/M) * ones(M,1);% Mixing proportions.  Start with a uniform distribution
+sigmaHat = std(x(:)) * ones(M,d);% Covariances
 
 covMatricesHat = NaN(M, d, d);
 for j = 1:M
     if allowCovariances
-        [Q,~] = qr(randn(d,d));% Generate an orthogonal matrix from the 
-                               % Haar distribution
-        C = transpose(Q)*diag(sigmaHat(j,:))*Q;% Generate the covariance matrix                     
+        [Q,~] = qr(randn(d,d));% Generate an orthogonal matrix from the
+        % Haar distribution
+        C = transpose(Q)*diag(sigmaHat(j,:))*Q;% Generate the covariance matrix
     else
-        C = diag(sigma(j,:));
+        C = diag(sigmaHat(j,:));
     end
     
     covMatricesHat(j,:,:) = C;
 end
 
-%%%%%% Main loop
-covJ = NaN(d,d);% The jth covariance matrix estimate
-detJ = NaN(1);% Determinant of the jth covariance matrix estimate
+%%%%%% Allocate storage
 a = NaN(N,M);
-w = NaN(N,M);
 
 maxIter = 10000;
 pp = NaN(M,maxIter+1);
 pp(:,1) = pHat;
 
-for iter = 1:maxIter
+for iter = 1:maxIter %%%%%%%%%%%%%%%%   MAIN LOOP
     % Expectation step
     for j = 1:M % Loop over classes
         covJ = squeeze(covMatricesHat(j,:,:));
@@ -67,12 +86,9 @@ for iter = 1:maxIter
     sw = sum(w);
     
     for j = 1:M
-        
-
         pHat(j) = sw(j) / N;
-        
         muHat(j,:) = transpose(w(:,j)) * x / sw(j);
-              
+        
         xTilde = bsxfun(@minus, x, muHat(j,:));
         covMatricesHat(j,:,:) = ...
             transpose(bsxfun(@times, xTilde, w(:,j))) * xTilde / sw(j);
@@ -83,21 +99,12 @@ for iter = 1:maxIter
     if ( max(abs(pHat - pp(:,iter))) < eps )
         break;
     end
-
 end
+
 % Sort the results
 [pHat, I] = sort(pHat);
 muHat = muHat(I,:);
 covMatricesHat = covMatricesHat(I,:,:);
-
-% Plot the probabilities as a function of iteration
-figure('name', 'Class probabilities');
-plot(pp');
-xlim([0, iter]);
-xlabel('iteration');
-ylabel('probability');
-title('Convergence of the EM method');
-
 
 % Classify the data points
 for j = 1:M % Loop over classes
@@ -105,10 +112,10 @@ for j = 1:M % Loop over classes
     detJ = det(covJ);
     xTilde = bsxfun(@minus, x, muHat(j,:));
     
-    a(:,j) = exp(-0.5*dot(xTilde/covJ, xTilde, 2)) ...
+    a(:,j) = pHat(j) * exp(-0.5*dot(xTilde/covJ, xTilde, 2)) ...
         / sqrt((2*pi)^M * detJ);
 end
-[dummy, yHat] = max(a,[],2);
+[~, yHat] = max(a,[],2);
 
 % Build the clusters cell array
 clustersHat = cell(M,1);
@@ -116,58 +123,11 @@ for j = 1:M
     clustersHat{j} = x(yHat == j, :);
 end
 
-
-
-
-% Check the results
-p = A.p;
-mu = A.mu;
-covMatrices = A.covMatrices;
-y = A.y;
-
-% Compare the probabilities of each class to the actual probabilities:
-if (A.numberOfClusters == M )
-    fprintf('\tProbabilities\n');
-    fprintf('Class\tp\tpHat\n');
-    for j = 1:M
-        fprintf('%d\t%.3f\t%.3f\n', j, p(j), pHat(j));
-    end
-
-
-
-    
-    fprintf('\n\n');
-    disp('Confusion matrix');
-    disp(confusionmat(y, yHat));
-end
-
-% Plot the data
-if (d == 2)
-    x1 = linspace(min(x(:,1)), max(x(:,1)));
-    x2 = linspace(min(x(:,2)), max(x(:,2)));
-    [xx, yy] = meshgrid(x1, x2);%y here is the y-axis on the graph, NOT the
-    %class/cluster id
-    
-    figure('name', 'Clusters in 2-D');
-    plot(mu(:,1), mu(:,2), 'ko');
-    hold on;
-    gscatter(x(:,1), x(:,2), y);
-    plot(muHat(:,1), muHat(:,2), 'kp');
-    
-    for j = 1:M
-        covJinv = inv(squeeze(covMatricesHat(j,:,:)));
-        xTilde = xx - muHat(j,1);
-        yTilde = yy - muHat(j,2);
-        %y here is the y-axis on the graph, NOT the
-        %class/cluster id
-        dummy = exp(-0.5*(covJinv(1,1) * xTilde.^2 + ...
-            2*covJinv(1,2)*xTilde.*yTilde + covJinv(2,2) * yTilde.^2));
-        contour(xx, yy, dummy, exp(-1/2), 'k-');
-    end
-    
-    xlabel('{\itx}_1');
-    ylabel('{\itx_2}');
-    figName = dataFile;
-    figName(figName == '_') = ' ';
-    title(figName);
+out.pHat = pHat;
+out.muHat = muHat;
+out.yHat = yHat;
+out.covMatricesHat = covMatricesHat;
+out.pp = pp;
+out.iter = iter; %Number of iterations required
+out.clustersStructure = clustersHat;%Array of structures for metrics
 end
